@@ -207,12 +207,27 @@ class RemotePlaybackManager {
   private resolutionQueue: Promise<void> = Promise.resolve();
   private ambiguousSessions: AmbiguousSessionPair[] = [];
   private ambiguousTimer: ReturnType<typeof setInterval> | null = null;
+  private lastReceiverUri = '';
+  private pendingRetirements = new Map<string, Set<string>>();
+
+  private confirmSessionHandover(uri: string): void {
+    if (!uri || this.ending) return;
+    this.lastReceiverUri = uri;
+    for (const [nextId, previousIds] of this.pendingRetirements) {
+      if (!this.uriMatchesSessionOrUrl(uri, nextId, '')) continue;
+      this.pendingRetirements.delete(nextId);
+      for (const previousId of previousIds) {
+        remoteDeliveryService.retireSessionWhenReady(previousId, nextId).catch(() => {});
+      }
+    }
+  }
 
   constructor() {
     remoteDeliveryService.onMediaAction(event => {
       this.handleMediaAction(event);
     });
     dlnaService.setOnUriObserved(uri => {
+      this.confirmSessionHandover(uri);
       this.resolveAmbiguousSessions(uri).catch(() => {});
     });
   }
@@ -400,6 +415,7 @@ class RemotePlaybackManager {
     }
     switch (status.playerState) {
       case MediaPlayerState.PLAYING:
+        if (status.mediaInfo?.contentUrl) this.confirmSessionHandover(status.mediaInfo.contentUrl);
         store.setStatus('playing');
         store.setErrorMessage(undefined);
         remoteDeliveryService
@@ -572,7 +588,7 @@ class RemotePlaybackManager {
     const operationSessionId = `session_${Crypto.randomUUID()}`;
     useRemoteStore.getState().setConnectedDevice(device);
     useRemoteStore.getState().setStatus('loading');
-    useRemoteStore.getState().setErrorMessage(undefined);
+    useRemoteStore.setState({errorMessage: undefined, preparingSubtitle: false});
 
     try {
       const isLocalFile = Boolean(
@@ -906,7 +922,7 @@ class RemotePlaybackManager {
           byteRangeSeek = Boolean(prep.byteRangeSeek);
           const dlnaSubUrl = this.resolveActiveSubtitleUrl(playUrl);
           await this.awaitPlaybackOperation(
-            dlnaService.loadMedia(
+            this.loadOnDlna(
               device,
               playUrl,
               payload.title,
@@ -952,7 +968,7 @@ class RemotePlaybackManager {
           byteRangeSeek = Boolean(prep.byteRangeSeek);
           const dlnaSubUrl = this.resolveActiveSubtitleUrl(playUrl);
           await this.awaitPlaybackOperation(
-            dlnaService.loadMedia(
+            this.loadOnDlna(
               device,
               playUrl,
               payload.title,
@@ -1227,6 +1243,34 @@ class RemotePlaybackManager {
   private registeredCastTrackIds = new Map<string, number>();
   private registeredSubtitleUrls = new Map<string, string>();
 
+  /** The receiver's subtitle request has a short timeout. Extract the selected
+   * track first, while the previous video can keep playing. */
+  private async prepareSubtitleForPlayback(
+    url: string | undefined,
+    operationToken: number,
+  ): Promise<void> {
+    if (!url) return;
+    useRemoteStore.setState({preparingSubtitle: true, errorMessage: undefined});
+    try {
+      await this.awaitCancelableOperation(
+        remoteDeliveryService.prepareSubtitle(url), operationToken,
+      );
+    } finally {
+      if (operationToken === this.loadGeneration && !this.ending) {
+        useRemoteStore.setState({preparingSubtitle: false});
+      }
+    }
+  }
+
+  private async loadOnDlna(
+    ...args: Parameters<typeof dlnaService.loadMedia>
+  ): Promise<void> {
+    const token = this.loadGeneration;
+    await this.prepareSubtitleForPlayback(args[3], token);
+    this.assertPlaybackOperation(token);
+    return dlnaService.loadMedia(...args);
+  }
+
   private async loadOnCast(
     mediaUrl: string,
     payload: RemoteMediaPayload,
@@ -1377,6 +1421,11 @@ class RemotePlaybackManager {
     });
 
     try {
+      const selectedId = useRemoteStore.getState().activeSubtitleTrackId;
+      await this.prepareSubtitleForPlayback(
+        selectedId ? this.registeredSubtitleUrls.get(selectedId) : undefined,
+        operationToken,
+      );
       await this.awaitPlaybackOperation(
         client.loadMedia(loadRequest),
         operationToken,
@@ -1421,6 +1470,19 @@ class RemotePlaybackManager {
 
       try {
         if (device.type === 'dlna') {
+          // Finish extraction before capturing the resume position or changing
+          // selection. A slow/failed track must not restart the playing video.
+          try {
+            await this.prepareSubtitleForPlayback(
+              this.resolveActiveSubtitleUrl(this.activePlayUrl, trackId ?? null),
+              operationToken,
+            );
+          } catch (error: any) {
+            if (!isRemotePlaybackCanceled(error)) {
+              useRemoteStore.getState().setErrorMessage(error?.message || 'Unable to prepare subtitles');
+            }
+            throw error;
+          }
           const previousSessionId = this.currentSessionId;
           const previousPlayUrl = this.activePlayUrl;
           const previousMimeType = this.activeMimeType;
@@ -1471,7 +1533,7 @@ class RemotePlaybackManager {
                 );
                 nextSessionLoadedOnDevice = true;
                 await this.awaitPlaybackOperation(
-                  dlnaService.loadMedia(
+                  this.loadOnDlna(
                     device,
                     prep.streamUrl,
                     this.activePayload.title || 'Vega Playback',
@@ -1508,7 +1570,7 @@ class RemotePlaybackManager {
                   trackId ?? null,
                 );
                 await this.awaitPlaybackOperation(
-                  dlnaService.loadMedia(
+                  this.loadOnDlna(
                     device,
                     this.activePlayUrl,
                     this.activePayload?.title || 'Vega Playback',
@@ -1551,7 +1613,7 @@ class RemotePlaybackManager {
                   previousTrackId ?? null,
                 );
                 await this.awaitPlaybackOperation(
-                  dlnaService.loadMedia(
+                  this.loadOnDlna(
                     device,
                     previousPlayUrl,
                     this.activePayload?.title || 'Vega Playback',
@@ -1683,20 +1745,7 @@ class RemotePlaybackManager {
               const subtitleUrl = this.registeredSubtitleUrls.get(trackId);
               if (!subtitleUrl)
                 throw new Error('Subtitle URL is unavailable');
-              const ready = await this.awaitPlaybackOperation(
-                fetch(subtitleUrl, {method: 'HEAD'}),
-                operationToken,
-              );
-              if (!ready.ok) {
-                const message = await this.awaitPlaybackOperation(
-                  remoteDeliveryService.getSessionError(this.currentSessionId),
-                  operationToken,
-                );
-                throw new Error(
-                  message ||
-                    `Subtitle preparation failed (HTTP ${ready.status})`,
-                );
-              }
+              await this.prepareSubtitleForPlayback(subtitleUrl, operationToken);
             }
             await this.awaitPlaybackOperation(
               client.setActiveTrackIds([castTrackId]),
@@ -1891,12 +1940,6 @@ class RemotePlaybackManager {
           );
         }
 
-        const isMkv =
-          this.activeContainer?.toLowerCase() === 'matroska' ||
-          this.activeContainer?.toLowerCase() === 'mkv' ||
-          this.activePayload.sourceType?.toLowerCase() === 'mkv' ||
-          sourceUrl.toLowerCase().includes('.mkv') ||
-          sourceUrl.toLowerCase().includes('matroska');
         const targetMode: 'hls' | 'ffmpeg' =
           device.type === 'cast' &&
           this.isCastHlsEnabled() &&
@@ -2028,7 +2071,7 @@ class RemotePlaybackManager {
         } else {
           const dlnaSubUrl = this.resolveActiveSubtitleUrl(prep.streamUrl);
           await this.awaitPlaybackOperation(
-            dlnaService.loadMedia(
+            this.loadOnDlna(
               device,
               prep.streamUrl,
               this.activePayload.title,
@@ -2073,7 +2116,7 @@ class RemotePlaybackManager {
         if (currentState.status === 'paused')
           useRemoteStore.getState().setStatus('paused');
         if (previousSessionId && previousSessionId !== nextSessionId) {
-          this.releaseSessionLater(previousSessionId);
+          this.releaseSessionLater(previousSessionId, nextSessionId);
         }
       } catch (e: any) {
         this.assertPlaybackOperation(operationToken);
@@ -2099,7 +2142,7 @@ class RemotePlaybackManager {
               const restoredSubUrl =
                 this.resolveActiveSubtitleUrl(previousPlayUrl);
               await this.awaitPlaybackOperation(
-                dlnaService.loadMedia(
+                this.loadOnDlna(
                   device,
                   previousPlayUrl,
                   this.activePayload.title,
@@ -2303,8 +2346,16 @@ class RemotePlaybackManager {
    * A switched-away session stays served for a while: a receiver may still be
    * opening its URL, and a 404 there makes Kodi stop the new one as well.
    */
-  private releaseSessionLater(sessionId: string): void {
+  private releaseSessionLater(sessionId: string, nextSessionId = this.currentSessionId): void {
+    // Leave the old URL/ring available, but stop its upstream read once the new
+    // session has emitted media. Native deliberately does nothing before then.
+    const previous = this.pendingRetirements.get(nextSessionId) || new Set<string>();
+    previous.add(sessionId);
+    this.pendingRetirements.set(nextSessionId, previous);
+    this.confirmSessionHandover(this.lastReceiverUri);
     setTimeout(() => {
+      this.pendingRetirements.get(nextSessionId)?.delete(sessionId);
+      if (this.pendingRetirements.get(nextSessionId)?.size === 0) this.pendingRetirements.delete(nextSessionId);
       if (sessionId !== this.currentSessionId) {
         remoteDeliveryService.cleanupSession(sessionId).catch(() => {});
       }
@@ -2331,7 +2382,7 @@ class RemotePlaybackManager {
       this.pendingSeekTimer = setTimeout(() => {
         this.pendingSeekTimer = null;
         this.pendingSeekResolve = null;
-        this.seekNow(seconds).finally(resolve);
+        this.seekNow(seconds).then(resolve, resolve);
       }, 700);
     });
   }
@@ -2588,7 +2639,7 @@ class RemotePlaybackManager {
           nextSessionId,
         );
         if (previousSessionId && previousSessionId !== nextSessionId) {
-          this.releaseSessionLater(previousSessionId);
+          this.releaseSessionLater(previousSessionId, nextSessionId);
         }
         if (initialGeneration !== this.playbackGeneration || this.ending) {
           return;
@@ -2721,7 +2772,7 @@ class RemotePlaybackManager {
           pair.previousSessionId &&
           pair.previousSessionId !== pair.nextSessionId
         ) {
-          this.releaseSessionLater(pair.previousSessionId);
+          this.releaseSessionLater(pair.previousSessionId, pair.nextSessionId);
         }
         if (
           queuedGeneration !== this.playbackGeneration ||
@@ -2804,6 +2855,8 @@ class RemotePlaybackManager {
   }
 
   stop(): Promise<void> {
+    this.pendingRetirements.clear();
+    this.lastReceiverUri = '';
     this.cancelQueuedSeek();
     this.ending = true;
     this.loadGeneration++;

@@ -35,7 +35,7 @@ module.exports = () => {
     './plugins/with-notifee-service.js',
     './plugins/with-android-release-gradle.js',
     './plugins/with-native-scroll-performance.js',
-    './plugins/with-android-signing.js',
+    ...(process.env.APP_VARIANT === 'standalone' ? [] : ['./plugins/with-android-signing.js']),
     './plugins/with-android-okhttp.js',
     ...(HAS_FIREBASE ? ['@react-native-firebase/app'] : []),
     ...(HAS_FIREBASE ? ['@react-native-firebase/crashlytics'] : []),
@@ -55,6 +55,8 @@ module.exports = () => {
     [
       'react-native-google-cast',
       {
+        // Avoid unreviewed SDK upgrades requiring a newer compileSdk/AGP/Kotlin.
+        androidPlayServicesCastFrameworkVersion: '22.3.1',
         expandedController: true,
       },
     ],
@@ -143,7 +145,7 @@ module.exports = () => {
       autolinking: {exclude: ['expo-splash-screen']},
       plugins,
       slug: 'vega',
-      version: '5.2.0',
+      version: '5.2.1',
       userInterfaceStyle: 'dark',
       experiments: {
         reactCompiler: true,
@@ -153,7 +155,7 @@ module.exports = () => {
           ? {googleServicesFile: androidGoogleServicesFile}
           : {}),
         package: PACKAGE_NAME,
-        versionCode: 204,
+        versionCode: 206,
         permissions: [
           'FOREGROUND_SERVICE',
           'FOREGROUND_SERVICE_DATA_SYNC',
@@ -192,6 +194,7 @@ module.exports = () => {
         supportsPictureInPicture: true,
       },
       ios: {
+        bundleIdentifier: PACKAGE_NAME,
         ...(!IS_PLAYSTORE && hasIosGooglePlist
           ? {googleServicesFile: iosGoogleServicesFile}
           : {}),

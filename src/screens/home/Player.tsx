@@ -1,4 +1,6 @@
 import {getPlaybackQuality} from '../../lib/player/playbackQuality';
+import {localContentId} from '../../lib/localContent/library';
+import useLocalContentStore from '../../lib/zustand/localContentStore';
 import PlayerMoreMenu from '../../components/PlayerMoreMenu';
 import {PlayerControlStyle} from '../../lib/player/controlStyle';
 import {languageLabel, shortLanguageLabel} from '../../lib/player/languageLabel';
@@ -124,6 +126,7 @@ import PlayerSourceMenu from '../../components/PlayerSourceMenu';
 import PlayerControlBar, {PlayerControl} from '../../components/PlayerControlBar';
 import HdrBadge from '../../components/media-console/components/HdrBadge';
 import PlayerControlEditor from '../../components/PlayerControlEditor';
+import {SubtitleQuickStyle} from '../../components/PlayerSubtitleStyleEditor';
 import {
   getTopControlLimit,
   normalizePlayerControlLayout,
@@ -977,6 +980,11 @@ const Player = ({route}: Props): React.JSX.Element => {
 
   const saveContinueWatchingProgress = useCallback(
     (position: number, duration: number) => {
+      if (route.params.localContent) {
+        const id = localContentId(route.params.infoUrl || '');
+        if (id && activeEpisode?.link) useLocalContentStore.getState().savePlayback(id, activeEpisode.link, position, duration);
+        return;
+      }
       if (!route.params.localContent && continueWatchingId) {
         updateContinueWatchingProgress(
           continueWatchingId,
@@ -1006,6 +1014,7 @@ const Player = ({route}: Props): React.JSX.Element => {
       finishContinueWatchingEpisode,
       route.params.episodeList,
       route.params.localContent,
+      route.params.infoUrl,
       updateContinueWatchingProgress,
     ],
   );
@@ -1019,6 +1028,11 @@ const Player = ({route}: Props): React.JSX.Element => {
   const playbackRenderKeyRef = useRef('');
   const combinedSkipsRef = useRef<SkipInterval[]>([]);
   const liveTimelineRef = useRef(false);
+  useEffect(() => {
+    playbackTimeRef.current = 0;
+    playbackRenderKeyRef.current = '';
+    setCurrentPlaybackTime(0);
+  }, [activeEpisodeKey]);
   const [settingsCloseFocused, setSettingsCloseFocused] = useState(false);
   const timelineRef = useRef<View>(null);
   const [timelineFocusHandle, setTimelineFocusHandle] = useState<number | null>(
@@ -1397,6 +1411,16 @@ const Player = ({route}: Props): React.JSX.Element => {
     playbackTimeRef.current = activeSkip.to;
     setCurrentPlaybackTime(activeSkip.to);
   }, [activeSkip]);
+
+  const handleRemoteSkip = useCallback((seconds: number) => {
+    if (settingsStorage.isHapticFeedbackEnabled()) {
+      ReactNativeHapticFeedback.trigger('effectTick', {
+        enableVibrateFallback: true,
+        ignoreAndroidSystemSettings: false,
+      });
+    }
+    remotePlaybackManager.seek(seconds).catch(() => {});
+  }, []);
 
   // Memoized values
   const hideSeekButtons = useMemo(
@@ -3135,10 +3159,19 @@ const Player = ({route}: Props): React.JSX.Element => {
     setShowControls(true);
   }, []);
   const saveControlLayout = useCallback(
-    (layout: PlayerControlLayout, hidden: PlayerControlId[], appearance: PlayerControlStyle, ambient?: {enabled: boolean; intensity: number}) => {
+    (layout: PlayerControlLayout, hidden: PlayerControlId[], appearance: PlayerControlStyle, ambient?: {enabled: boolean; intensity: number; spread: number; responseMs: number}, subtitle?: SubtitleQuickStyle) => {
+      if (subtitle) {
+        settingsStorage.setSubtitleFontSize(subtitle.fontSize);
+        settingsStorage.setSubtitleTextOpacity(subtitle.textOpacity);
+        settingsStorage.setSubtitleOpacity(subtitle.opacity);
+        settingsStorage.setSubtitleBottomPadding(subtitle.paddingBottom);
+        setSubtitleStyle(readSubtitleStyle());
+      }
       if (ambient) {
         settingsStorage.setAmbientVideoEnabled(ambient.enabled);
         settingsStorage.setAmbientIntensity(ambient.intensity);
+        settingsStorage.setAmbientSpread(ambient.spread);
+        settingsStorage.setAmbientResponseMs(ambient.responseMs);
       }
       settingsStorage.setPlayerControlLayout(layout);
       settingsStorage.setHiddenPlayerControls(hidden);
@@ -3297,9 +3330,9 @@ const Player = ({route}: Props): React.JSX.Element => {
       icon: 'skip-next-outline',
       visible:
         hasNextEpisode &&
-        (isTV ||
-          (videoPositionRef.current.duration > 0 &&
-            currentPlaybackTime / videoPositionRef.current.duration > 0.8)),
+        hasProgressRef.current &&
+        videoPositionRef.current.duration > 0 &&
+        videoPositionRef.current.position / videoPositionRef.current.duration > 0.8,
       onPress: handleNextEpisode,
     },
     {
@@ -3318,7 +3351,7 @@ const Player = ({route}: Props): React.JSX.Element => {
     fittedControlLayout.top.filter((id) =>
       toolbarControls.some((control) => control.id === id && control.visible),
     ).length *
-      (24 * controlStyle.scale + 24) +
+      (48 * controlStyle.scale) +
     20 + hdrWidth;
 
   // Ask for a local file before touching the network.
@@ -3582,8 +3615,8 @@ const Player = ({route}: Props): React.JSX.Element => {
                 );
               });
           }}
-          skipInterval={activeSkip}
-          onSkipPress={handleSkip}
+          skipIntervals={combinedSkips}
+          onSkipPress={handleRemoteSkip}
         />
       ) : processedStreamUrl ? (
         <VideoPlayer {...videoPlayerProps} nativeVideoViewRef={nativeVideoViewRef} headerStatus={torrentHeaderStatus} headerRightInset={toolbarHeaderInset} playbackSuspended={editingControls} controlScale={controlStyle.scale} seekbarScale={controlStyle.seekbarScale} ambientVideoSize={loadedVideoSize} ambientDisabled={isCasting} />

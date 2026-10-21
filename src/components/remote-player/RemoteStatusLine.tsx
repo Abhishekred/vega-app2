@@ -7,19 +7,19 @@ import {useRemoteStore} from '../../lib/remote/remoteStore';
 import {useM3Colors} from '../../theme/M3PaletteContext';
 
 interface RemoteStatusLineProps {
-  skipInterval?: {from: number; to: number; title?: string} | null;
-  onSkipPress?: () => void;
+  skipIntervals?: {from: number; to: number; title?: string}[];
+  onSkipPress?: (seconds: number) => void;
   preparingText?: string | null;
   /** Small second line, such as torrent download progress. */
   detailText?: string | null;
 }
 
 /**
- * One fixed-height slot for error, skip, or playback state, so a message
- * never pushes the poster or controls around.
+ * Reserve space for status/actions and their detail line. Native buttons and
+ * larger system fonts must never overflow into the media title or seekbar.
  */
 export const RemoteStatusLine: React.FC<RemoteStatusLineProps> = ({
-  skipInterval,
+  skipIntervals,
   onSkipPress,
   preparingText,
   detailText,
@@ -27,15 +27,20 @@ export const RemoteStatusLine: React.FC<RemoteStatusLineProps> = ({
   const colors = useM3Colors();
   const status = useRemoteStore(state => state.status);
   const seeking = useRemoteStore(state => !!state.pendingSeek);
+  const preparingSubtitle = useRemoteStore(state => state.preparingSubtitle);
   const errorMessage = useRemoteStore(state => state.errorMessage);
   const connectedDevice = useRemoteStore(state => state.connectedDevice);
   const currentTime = useRemoteStore(state => state.currentTime);
 
+  const skipInterval = skipIntervals?.find(interval =>
+    Number.isFinite(interval.from) && Number.isFinite(interval.to) &&
+    interval.to > interval.from && currentTime >= interval.from && currentTime < interval.to,
+  );
   const showSkip =
     !!skipInterval &&
     status !== 'error' &&
     currentTime >= skipInterval.from &&
-    currentTime <= skipInterval.to;
+    currentTime < skipInterval.to && !!onSkipPress;
 
   let content: React.ReactNode;
   if (errorMessage || status === 'error') {
@@ -50,20 +55,24 @@ export const RemoteStatusLine: React.FC<RemoteStatusLineProps> = ({
         </AppText>
       </View>
     );
-  } else if (preparingText || seeking || status === 'buffering' || status === 'loading' || status === 'connecting') {
+  } else if (preparingSubtitle || preparingText || seeking || status === 'buffering' || status === 'loading' || status === 'connecting') {
     content = (
       <View style={{alignItems: 'center', flexDirection: 'row', gap: 10}}>
         <ActivityIndicator size="small" color={colors.primary} />
         <AppText role="labelLarge" numberOfLines={1} style={{color: colors.primary}}>
-          {preparingText || (seeking ? 'Seeking…' : 'Buffering…')}
+          {preparingSubtitle ? 'Preparing subtitles…' : preparingText || (seeking ? 'Seeking…' : 'Buffering…')}
         </AppText>
       </View>
     );
   } else if (showSkip) {
     content = (
-      <Button variant="tonal" compact onPress={onSkipPress}>
-        {skipInterval?.title || 'Skip intro'}
-      </Button>
+      <View style={{alignSelf: 'flex-end'}}>
+        <Button variant="tonal" compact onPress={() => onSkipPress?.(skipInterval!.to)}>
+          {skipInterval?.title
+            ? (/^skip\b/i.test(skipInterval.title) ? skipInterval.title : `Skip ${skipInterval.title}`)
+            : 'Skip intro'}
+        </Button>
+      </View>
     );
   } else {
     const text = !connectedDevice
@@ -84,19 +93,22 @@ export const RemoteStatusLine: React.FC<RemoteStatusLineProps> = ({
     <View
       style={{
         alignItems: 'center',
-        height: 48,
-        justifyContent: 'center',
+        minHeight: detailText ? 80 : 64,
+        flexShrink: 0,
+        paddingTop: 8,
+        paddingBottom: 0,
+        justifyContent: 'flex-end',
         paddingHorizontal: 24,
       }}>
-      {content}
       {!!detailText && (
         <AppText
           role="labelSmall"
           numberOfLines={1}
-          style={{color: colors.onSurfaceVariant, marginTop: 2}}>
+          style={{color: colors.onSurfaceVariant, marginBottom: 8}}>
           {detailText}
         </AppText>
       )}
+      {content}
     </View>
   );
 };
