@@ -44,6 +44,23 @@ jobs:
       - name: Generate Android project
         run: npx expo prebuild --platform android --clean --no-install
 
+      - name: Configure Gradle memory for APK packaging
+        shell: bash
+        run: |
+          set -euo pipefail
+          GRADLE_PROPERTIES="android/gradle.properties"
+          if [ ! -f "$GRADLE_PROPERTIES" ]; then
+            echo "ERROR: $GRADLE_PROPERTIES was not generated."
+            exit 1
+          fi
+          sed -i '/^org.gradle.jvmargs=/d' "$GRADLE_PROPERTIES"
+          cat >> "$GRADLE_PROPERTIES" <<'EOF'
+          org.gradle.jvmargs=-Xmx5g -XX:MaxMetaspaceSize=1g -Dfile.encoding=UTF-8
+          org.gradle.workers.max=2
+          org.gradle.parallel=false
+          EOF
+          echo "Configured Gradle JVM memory and worker limits."
+
       - name: Configure unsigned release
         shell: bash
         run: |
