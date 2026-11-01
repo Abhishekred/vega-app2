@@ -55,11 +55,23 @@ jobs:
           fi
           sed -i '/^org.gradle.jvmargs=/d' "$GRADLE_PROPERTIES"
           cat >> "$GRADLE_PROPERTIES" <<'EOF'
-          org.gradle.jvmargs=-Xmx5g -XX:MaxMetaspaceSize=1g -Dfile.encoding=UTF-8
-          org.gradle.workers.max=2
+          org.gradle.jvmargs=-Xmx6g -XX:MaxMetaspaceSize=768m -Dfile.encoding=UTF-8
+          org.gradle.workers.max=1
           org.gradle.parallel=false
           EOF
           echo "Configured Gradle JVM memory and worker limits."
+
+      - name: Add temporary swap for Android resource merge
+        shell: bash
+        run: |
+          set -euo pipefail
+          if ! swapon --show | grep -q '/'; then
+            sudo fallocate -l 4G /swapfile || sudo dd if=/dev/zero of=/swapfile bs=1M count=4096 status=progress
+            sudo chmod 600 /swapfile
+            sudo mkswap /swapfile
+            sudo swapon /swapfile
+          fi
+          free -h
 
       - name: Configure unsigned release
         shell: bash
