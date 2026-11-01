@@ -344,11 +344,31 @@ const Home = ({}: Props) => {
               }
               ListHeaderComponent={
                 <>
-                  <HeroOptimized
-                    isDrawerOpen={isTV ? isDrawerOpen : drawerSceneActive}
-                    isVisible={heroVisible}
-                    onOpenDrawer={openDrawer}
-                  />
+                  <View style={{backgroundColor: '#E50914', paddingTop: isTV ? 18 : 10, paddingBottom: 12, paddingHorizontal: 18}}>
+                    <View style={{flexDirection: 'row', alignItems: 'center', justifyContent: 'space-between'}}>
+                      <View>
+                        <AppText role="titleLargeEmphasized" style={{color: '#FFFFFF', letterSpacing: 0.3}}>Anime Plex</AppText>
+                        <AppText role="labelSmall" style={{color: 'rgba(255,255,255,0.82)', marginTop: 1}}>Movies · Anime · Series</AppText>
+                      </View>
+                      <View style={{backgroundColor: 'rgba(0,0,0,0.16)', borderRadius: 20, paddingHorizontal: 12, paddingVertical: 6}}>
+                        <AppText role="labelMediumEmphasized" style={{color: '#FFFFFF'}}>{provider.display_name}</AppText>
+                      </View>
+                    </View>
+                  </View>
+                  <ScrollView horizontal showsHorizontalScrollIndicator={false} contentContainerStyle={{paddingHorizontal: 12, paddingVertical: 10, gap: 9}} style={{backgroundColor: '#090909'}}>
+                    {installedProviders.map((item, index) => {
+                      const active = item.value === provider.value;
+                      return (
+                        <Pressable key={item.value || index} accessibilityRole="button" accessibilityState={{selected: active}} onPress={() => useContentStore.getState().setProvider(item)} style={{borderRadius: 22, paddingHorizontal: 16, paddingVertical: 9, backgroundColor: active ? '#E50914' : '#242424', borderWidth: 1, borderColor: active ? '#E50914' : '#383838'}}>
+                          <AppText role="labelLargeEmphasized" style={{color: active ? '#FFFFFF' : '#D5D5D5'}} numberOfLines={1}>{item.display_name || item.value}</AppText>
+                        </Pressable>
+                      );
+                    })}
+                    <Pressable accessibilityRole="button" onPress={openDrawer} style={{borderRadius: 22, paddingHorizontal: 16, paddingVertical: 9, backgroundColor: '#242424', borderWidth: 1, borderColor: '#383838'}}>
+                      <AppText role="labelLargeEmphasized" style={{color: '#FFFFFF'}}>More platforms</AppText>
+                    </Pressable>
+                  </ScrollView>
+                  <HeroOptimized isDrawerOpen={isTV ? isDrawerOpen : drawerSceneActive} isVisible={heroVisible} onOpenDrawer={openDrawer} />
                   {showContinueWatching && <ContinueWatching />}
                 </>
               }
